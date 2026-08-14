@@ -25,6 +25,7 @@ window.__ModuleLoader__.load({
       notifyWebhook: '',
       notifyOnError: true,
       notifyBackgroundOnly: true,
+      soundEnabled: true,
       kbDir: '',
       kbExtensions: 'txt,md,json,yaml,yml,js,ts,jsx,tsx',
       kbChunkSize: 1000,
@@ -246,6 +247,11 @@ window.__ModuleLoader__.load({
           title: '仅后台通知',
           caption: '浏览器标签页可见时不打扰，切到后台才提醒。',
           children: CheckRow({ checked: s.notifyBackgroundOnly, onChange: function (v) { setField('notifyBackgroundOnly', v) }, label: '启用' }),
+        }),
+        Row({
+          title: '音效反馈',
+          caption: '任务完成“叮”、失败低音、审批出现提醒音（PowerShell Beep，需系统音量）。',
+          children: CheckRow({ checked: s.soundEnabled, onChange: function (v) { setField('soundEnabled', v) }, label: '启用' }),
         }),
 
         el('div', { className: 'dsh-wm-groupTitle' }, '私有知识库'),

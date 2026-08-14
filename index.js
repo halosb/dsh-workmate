@@ -35,6 +35,7 @@ const DEFAULT_CONFIG = {
   notifyWebhook: '',
   notifyOnError: true,
   notifyBackgroundOnly: true,
+  soundEnabled: true,
   kbDir: '',
   kbExtensions: 'txt,md,json,yaml,yml,js,ts,jsx,tsx',
   kbChunkSize: 1000,
@@ -45,7 +46,7 @@ const DEFAULT_CONFIG = {
 function sanitizeConfig(input) {
   const out = Object.assign({}, DEFAULT_CONFIG)
   if (input === null || typeof input !== 'object') return out
-  for (const key of ['notifyEnabled', 'notifySystem', 'notifyOnError', 'notifyBackgroundOnly']) {
+  for (const key of ['notifyEnabled', 'notifySystem', 'notifyOnError', 'notifyBackgroundOnly', 'soundEnabled']) {
     if (typeof input[key] === 'boolean') out[key] = input[key]
   }
   if (typeof input.notifyMinDurationMs === 'number' && Number.isFinite(input.notifyMinDurationMs)) {
@@ -89,6 +90,17 @@ async function saveIndex() {
   await writeFile(INDEX_PATH, JSON.stringify(kbIndex))
 }
 
+/** 把一段文本按 size/overlap 切成块，追加到 chunks（id 从当前长度续号）。 */
+function chunkText(text, doc, size, overlap, chunks) {
+  const step = Math.max(1, size - overlap)
+  for (let i = 0; i < text.length; i += step) {
+    const seg = text.slice(i, i + size)
+    if (seg.trim().length < 20) continue
+    chunks.push({ id: chunks.length, doc, text: seg })
+    if (i + step >= text.length) break
+  }
+}
+
 /** 全量扫描 kbDir，按扩展名白名单读取文本文件并分块。 */
 async function reindex(config) {
   const dir = config.kbDir
@@ -127,15 +139,7 @@ async function reindex(config) {
         continue
       }
       fileCount += 1
-      const size = config.kbChunkSize
-      const overlap = config.kbOverlap
-      const step = Math.max(1, size - overlap)
-      for (let i = 0; i < text.length; i += step) {
-        const seg = text.slice(i, i + size)
-        if (seg.trim().length < 20) continue
-        chunks.push({ id: chunks.length, doc: relative(dir, full) || full, text: seg })
-        if (i + step >= text.length) break
-      }
+      chunkText(text, relative(dir, full) || full, config.kbChunkSize, config.kbOverlap, chunks)
     }
   }
 
@@ -211,6 +215,88 @@ function search(query, limit = 5) {
   }
 }
 
+/** 简易 HTML 正文提取：去 script/style、去标签、解码常见实体、压缩空白。 */
+function extractText(html) {
+  const withoutScripts = html
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+  return withoutScripts
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+/** 提取 <title>。 */
+function extractTitle(html) {
+  const match = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html)
+  if (match === null) return ''
+  return match[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim().slice(0, 120)
+}
+
+/** 抓取网页 → 提取正文 → 分块 → 追加进知识库索引。 */
+async function captureWeb(url, config) {
+  let parsed
+  try {
+    parsed = new URL(url)
+  } catch {
+    return { ok: false, message: '无效 URL。' }
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return { ok: false, message: '仅支持 http/https 链接。' }
+  }
+  let res
+  try {
+    res = await fetch(url, {
+      headers: { 'user-agent': 'dsh-workmate/0.1' },
+      redirect: 'follow',
+    })
+  } catch (error) {
+    return { ok: false, message: `抓取失败：${error instanceof Error ? error.message : String(error)}` }
+  }
+  if (!res.ok) return { ok: false, message: `抓取失败：HTTP ${res.status}` }
+  const html = await res.text()
+  if (html.length > 5 * 1024 * 1024) return { ok: false, message: '页面过大（>5MB）。' }
+  const title = extractTitle(html)
+  const text = extractText(html)
+  if (text.length < 50) return { ok: false, message: '未能提取到有效正文。' }
+
+  const doc = `web: ${title !== '' ? title : parsed.hostname} (${parsed.href})`
+  const chunks = []
+  chunkText(text, doc, config.kbChunkSize, config.kbOverlap, chunks)
+  if (chunks.length === 0) return { ok: false, message: '正文过短，未生成块。' }
+
+  // 确保索引容器存在（即使没有本地目录也允许纯网页库）
+  if (kbIndex === null || !Array.isArray(kbIndex.chunks)) {
+    kbIndex = { chunks: [], stats: { fileCount: 0, chunkCount: 0, wordCount: 0, indexedAt: 0, dir: config.kbDir } }
+  }
+  const offset = kbIndex.chunks.length
+  for (const chunk of chunks) chunk.id = offset + chunk.id
+  kbIndex.chunks.push(...chunks)
+  let wordCount = 0
+  for (const chunk of kbIndex.chunks) wordCount += chunk.text.split(/\s+/).filter(Boolean).length
+  kbIndex.stats = {
+    fileCount: kbIndex.stats.fileCount,
+    chunkCount: kbIndex.chunks.length,
+    wordCount,
+    indexedAt: Date.now(),
+    dir: config.kbDir,
+  }
+  try {
+    await saveIndex()
+  } catch {
+    // 写失败仅内存索引可用
+  }
+  return { ok: true, title, url: parsed.href, doc, chunkCount: chunks.length }
+}
+
 /** 会话标题：①标题服务 ②日志 title 事件 ③工作区目录名 ④会话 id。 */
 function sessionLabelOf(ctx, agent, sessionId) {
   // ① 标题服务投影（UI 同源）
@@ -278,13 +364,28 @@ function formatDuration(ms) {
   return `${h} 小时 ${m % 60} 分`
 }
 
-/** 分发通知：系统 Toast + Webhook。 */
+/** 播放提示音（PowerShell Console.Beep，零依赖）：done=双音"叮"，error=低音，approve=短促提醒。 */
+function playSound(kind) {
+  const seq = kind === 'done' ? '880,140;1175,180'
+    : kind === 'error' ? '196,420'
+    : '660,150;660,150'
+  const parts = seq.split(';')
+  const command = parts.map(p => `[console]::beep(${p})`).join(';')
+  spawn('powershell', ['-NoProfile', '-Command', command], {
+    stdio: 'ignore',
+    windowsHide: true,
+  }).on('error', () => {})
+}
+
+/** 分发通知：系统 Toast + Webhook + 音效。 */
 async function notify(config, info) {
   if (config.notifyEnabled !== true) return
   if (config.notifyBackgroundOnly === true && pageVisible) return
   const rawTitle = info.title !== '' ? info.title : 'dsh-workmate'
   const title = rawTitle.length > 30 ? rawTitle.slice(0, 30) + '…' : rawTitle
   const message = `任务${info.status === 'error' ? '失败' : '完成'}，用时 ${formatDuration(info.durationMs)}`
+
+  if (config.soundEnabled === true) playSound(info.status === 'error' ? 'error' : 'done')
 
   if (config.notifySystem === true) {
     const script = [
@@ -399,6 +500,14 @@ export function apply(ctx) {
     })
   })
 
+  // 审批提醒音：审批请求出现时播放提示（waterfall 观察者，透传 next）。
+  ctx.on('approval/request', (req, next) => {
+    void readConfig().then(config => {
+      if (config.soundEnabled === true) playSound('approve')
+    })
+    return next()
+  })
+
   // 模型工具：私有知识库检索（全局注册，agent 目录可见）。
   ctx.tools.register(defineTool({
     name: 'kb_search',
@@ -415,6 +524,25 @@ export function apply(ctx) {
     },
     execute(args) {
       return Promise.resolve(search(String(args.query ?? ''), 5))
+    },
+  }))
+
+  // 模型工具：抓取网页进知识库。
+  ctx.tools.register(defineTool({
+    name: 'web_capture',
+    description:
+      'Fetch a web page, extract its readable text, and add it to the private knowledge base indexed by the '
+      + 'dsh-workmate plugin. Use this when the user wants to save a web page / article into their KB for later '
+      + 'retrieval via kb_search. Returns the captured title, doc label, and chunk count.',
+    parameters: {
+      url: { type: 'string', required: true, description: 'The page URL to capture (http/https).' },
+    },
+    output: {
+      schema: { type: 'json' },
+      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }],
+    },
+    execute(args) {
+      return readConfig().then(config => captureWeb(String(args.url ?? ''), config))
     },
   }))
 
