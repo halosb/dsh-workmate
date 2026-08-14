@@ -22,6 +22,12 @@
 - **重建不丢网页库**：本地目录"重新索引"时自动合并保留所有网页捕获，互不覆盖
 - 文档不离开本机，不依赖 embedding 模型
 
+## 效果预览
+
+![设置页 - 任务通知](docs/screenshots/settings-1.png)
+
+![设置页 - 私有知识库](docs/screenshots/settings-2.png)
+
 ## 工作原理（30 秒）
 
 1. 本插件是 DSH **组合包（bundle）**：`package.json` 声明 `dsh.bundle` + `dsh.client`。
@@ -100,6 +106,8 @@ dsh-workmate/
 ├── cordis.patch.yml      # 组合层：插入 workmate 行
 ├── index.js              # host 半边：通知监听 + 知识库索引/检索 + kb_search/web_capture/kb_recent 工具 + /wf/* 路由
 ├── client.js             # 浏览器半边：设置页 UI
+├── docs/
+│   └── screenshots/      # 设置页效果预览截图
 ├── README.md
 ├── 使用与配置文档.md      # 完整使用与配置说明
 ├── config.json           # 运行时生成：用户配置（已 gitignore）
