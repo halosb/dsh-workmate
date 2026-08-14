@@ -250,7 +250,7 @@ window.__ModuleLoader__.load({
         }),
         Row({
           title: '音效反馈',
-          caption: '任务完成“叮”、失败低音、审批出现提醒音（PowerShell Beep，需系统音量）。',
+          caption: '每次任务完成“叮”、失败低音、审批出现提醒音；不受阈值与前后台限制（需系统音量）。',
           children: CheckRow({ checked: s.soundEnabled, onChange: function (v) { setField('soundEnabled', v) }, label: '启用' }),
         }),
 
@@ -292,7 +292,7 @@ window.__ModuleLoader__.load({
         }),
         Row({
           title: '重新索引',
-          caption: '文档变更后手动重建索引；重启时也会自动索引。',
+          caption: '文档变更后手动重建索引（自动保留网页捕获）；重启时也会自动索引。',
           children: el('div', { className: 'dsh-wm-control', style: { alignItems: 'center' } },
             el('button', { type: 'button', className: 'dsh-wm-button', onClick: reindex }, '重新索引'),
             el('span', { className: 'dsh-wm-stats' }, statText),

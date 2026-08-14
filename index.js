@@ -101,13 +101,46 @@ function chunkText(text, doc, size, overlap, chunks) {
   }
 }
 
-/** 全量扫描 kbDir，按扩展名白名单读取文本文件并分块。 */
+/** 重建索引：全量扫描 kbDir；同时合并保留旧索引中的网页捕获（web: 前缀 chunk），重建不丢网页库。 */
 async function reindex(config) {
   const dir = config.kbDir
+  // 合并逻辑：web_capture 抓的网页文档不因重建而丢失。
+  const keptWeb = (kbIndex !== null && Array.isArray(kbIndex.chunks))
+    ? kbIndex.chunks.filter(chunk => typeof chunk.doc === 'string' && chunk.doc.startsWith('web: '))
+    : []
+
+  // 未配置本地目录：若已有网页捕获，保留为纯网页库；否则清空。
   if (dir === '') {
-    kbIndex = null
-    return null
+    if (keptWeb.length === 0) {
+      kbIndex = null
+      return null
+    }
+    const chunks = keptWeb.map((chunk, i) => ({
+      id: i,
+      doc: chunk.doc,
+      text: chunk.text,
+      ...(typeof chunk.addedAt === 'number' ? { addedAt: chunk.addedAt } : {}),
+    }))
+    let wordCount = 0
+    for (const chunk of chunks) wordCount += chunk.text.split(/\s+/).filter(Boolean).length
+    kbIndex = {
+      chunks,
+      stats: {
+        fileCount: 0,
+        chunkCount: chunks.length,
+        wordCount,
+        indexedAt: Date.now(),
+        dir: '',
+      },
+    }
+    try {
+      await saveIndex()
+    } catch {
+      // 索引文件写失败不致命，仅内存索引继续可用
+    }
+    return kbIndex.stats
   }
+
   const exts = new Set(
     config.kbExtensions.split(',').map(s => s.trim().toLowerCase().replace(/^\./, '')).filter(Boolean),
   )
@@ -144,13 +177,23 @@ async function reindex(config) {
   }
 
   await walk(dir)
+  // 合并本地扫描 + 保留的网页捕获，重新编号 id（captureWeb 依 chunk 数续号）。
+  const merged = [
+    ...chunks.map((chunk, i) => ({ id: i, doc: chunk.doc, text: chunk.text })),
+    ...keptWeb.map((chunk, i) => ({
+      id: chunks.length + i,
+      doc: chunk.doc,
+      text: chunk.text,
+      ...(typeof chunk.addedAt === 'number' ? { addedAt: chunk.addedAt } : {}),
+    })),
+  ]
   let wordCount = 0
-  for (const chunk of chunks) wordCount += chunk.text.split(/\s+/).filter(Boolean).length
+  for (const chunk of merged) wordCount += chunk.text.split(/\s+/).filter(Boolean).length
   kbIndex = {
-    chunks,
+    chunks: merged,
     stats: {
       fileCount,
-      chunkCount: chunks.length,
+      chunkCount: merged.length,
       wordCount,
       indexedAt: Date.now(),
       dir,
@@ -212,6 +255,44 @@ function search(query, limit = 5) {
       score: Number(x.score.toFixed(3)),
       snippet: chunks[x.i].text.slice(0, 600),
     })),
+  }
+}
+
+/**
+ * 列出最近通过 web_capture 捕获的网页文档（按 doc 聚合、最新在前）。
+ * 让 AI 直接"告知"用户知识库里存了哪些网页，无需盲搜。
+ */
+function listRecentCaptures(limit = 10) {
+  if (kbIndex === null || !Array.isArray(kbIndex.chunks) || kbIndex.chunks.length === 0) {
+    return { ok: false, message: '知识库为空：还没有通过 web_capture 捕获的内容。' }
+  }
+  const byDoc = new Map()
+  for (const chunk of kbIndex.chunks) {
+    if (typeof chunk.doc !== 'string' || !chunk.doc.startsWith('web: ')) continue
+    let entry = byDoc.get(chunk.doc)
+    if (entry === undefined) {
+      const title = chunk.doc.slice(5).replace(/\s*\([^)]*\)\s*$/, '').trim()
+      const urlMatch = /\((https?:\/\/[^)]+)\)\s*$/.exec(chunk.doc)
+      entry = {
+        doc: chunk.doc,
+        title,
+        url: urlMatch === null ? '' : urlMatch[1],
+        chunkCount: 0,
+        addedAt: typeof chunk.addedAt === 'number' ? chunk.addedAt : 0,
+      }
+      byDoc.set(chunk.doc, entry)
+    }
+    entry.chunkCount += 1
+    if (typeof chunk.addedAt === 'number' && chunk.addedAt > entry.addedAt) entry.addedAt = chunk.addedAt
+  }
+  const captures = [...byDoc.values()]
+    .sort((a, b) => b.addedAt - a.addedAt)
+    .slice(0, Math.max(1, Math.min(limit, 50)))
+  return {
+    ok: true,
+    indexFile: INDEX_PATH,
+    count: captures.length,
+    captures,
   }
 }
 
@@ -278,7 +359,11 @@ async function captureWeb(url, config) {
     kbIndex = { chunks: [], stats: { fileCount: 0, chunkCount: 0, wordCount: 0, indexedAt: 0, dir: config.kbDir } }
   }
   const offset = kbIndex.chunks.length
-  for (const chunk of chunks) chunk.id = offset + chunk.id
+  const now = Date.now()
+  for (const chunk of chunks) {
+    chunk.id = offset + chunk.id
+    chunk.addedAt = now // 捕获时间戳，供 kb_recent 排序
+  }
   kbIndex.chunks.push(...chunks)
   let wordCount = 0
   for (const chunk of kbIndex.chunks) wordCount += chunk.text.split(/\s+/).filter(Boolean).length
@@ -294,7 +379,16 @@ async function captureWeb(url, config) {
   } catch {
     // 写失败仅内存索引可用
   }
-  return { ok: true, title, url: parsed.href, doc, chunkCount: chunks.length }
+  return {
+    ok: true,
+    title,
+    url: parsed.href,
+    doc,
+    chunkCount: chunks.length,
+    indexFile: INDEX_PATH,          // 索引落盘位置（AI 可直接告知用户）
+    totalChunks: kbIndex.chunks.length,
+    howToRetrieve: '在 kb_search 里搜 "' + (title !== '' ? title : parsed.hostname) + '" 即可取回这段内容。',
+  }
 }
 
 /** 会话标题：①标题服务 ②日志 title 事件 ③工作区目录名 ④会话 id。 */
@@ -385,8 +479,6 @@ async function notify(config, info) {
   const title = rawTitle.length > 30 ? rawTitle.slice(0, 30) + '…' : rawTitle
   const message = `任务${info.status === 'error' ? '失败' : '完成'}，用时 ${formatDuration(info.durationMs)}`
 
-  if (config.soundEnabled === true) playSound(info.status === 'error' ? 'error' : 'done')
-
   if (config.notifySystem === true) {
     const script = [
       'Add-Type -AssemblyName System.Windows.Forms',
@@ -470,6 +562,9 @@ export function apply(ctx) {
       if (start === undefined) return
       const durationMs = Date.now() - start
       void readConfig().then(config => {
+        // 音效：每次任务完成都"叮"（不看阈值与前后台），作为即时反馈。
+        if (config.soundEnabled === true) playSound('done')
+        // 通知：仍按阈值 + 仅后台闸门。
         if (config.notifyEnabled === true && durationMs >= config.notifyMinDurationMs) {
           void notify(config, {
             status: 'done',
@@ -489,6 +584,8 @@ export function apply(ctx) {
       : undefined
     if (sessionId === undefined) return
     void readConfig().then(config => {
+      // 音效：失败低音（不看阈值与前后台）。
+      if (config.soundEnabled === true) playSound('error')
       if (config.notifyEnabled === true && config.notifyOnError === true) {
         void notify(config, {
           status: 'error',
@@ -505,6 +602,17 @@ export function apply(ctx) {
     void readConfig().then(config => {
       if (config.soundEnabled === true) playSound('approve')
     })
+    return next()
+  })
+
+  // 提问表单提示音：AI 调用 ask_user_question（多选/复选/选项问题表单）时播放提示。
+  // tools/execute 是 around-dispatch 瀑布，必须透传 next()，不得吞掉结果。
+  ctx.on('tools/execute', (exec, next) => {
+    if (exec !== null && typeof exec === 'object' && exec.name === 'ask_user_question') {
+      void readConfig().then(config => {
+        if (config.soundEnabled === true) playSound('approve')
+      })
+    }
     return next()
   })
 
@@ -533,7 +641,7 @@ export function apply(ctx) {
     description:
       'Fetch a web page, extract its readable text, and add it to the private knowledge base indexed by the '
       + 'dsh-workmate plugin. Use this when the user wants to save a web page / article into their KB for later '
-      + 'retrieval via kb_search. Returns the captured title, doc label, and chunk count.',
+      + 'retrieval via kb_search. Returns the captured title, doc label, chunk count, and the index file path.',
     parameters: {
       url: { type: 'string', required: true, description: 'The page URL to capture (http/https).' },
     },
@@ -543,6 +651,27 @@ export function apply(ctx) {
     },
     execute(args) {
       return readConfig().then(config => captureWeb(String(args.url ?? ''), config))
+    },
+  }))
+
+  // 模型工具：直接列出最近捕获的网页（告诉用户知识库存了什么，无需盲搜）。
+  ctx.tools.register(defineTool({
+    name: 'kb_recent',
+    description:
+      'List the most recently captured web pages in the dsh-workmate private knowledge base, newest first. '
+      + 'Each entry includes the doc label, page title, URL, chunk count, and capture time. '
+      + 'Use this when the user asks what pages have been saved to their KB (e.g. "我把哪些网页存进知识库了") '
+      + '— it directly tells you what is stored and where, without a fuzzy search. Returns up to `limit` entries.',
+    parameters: {
+      limit: { type: 'number', description: 'Max entries to return (default 10).' },
+    },
+    output: {
+      schema: { type: 'json' },
+      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }],
+    },
+    execute(args) {
+      const n = typeof args.limit === 'number' && Number.isFinite(args.limit) ? Math.floor(args.limit) : 10
+      return Promise.resolve(listRecentCaptures(n))
     },
   }))
 

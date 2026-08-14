@@ -11,19 +11,21 @@
 - 监听 Agent 状态（`agent/status` idle ⇄ running）计时，**长任务**（超过阈值）结束/失败时提醒
 - 通道一：**Windows 原生 Toast**（标题=会话标题/工作区名，正文=耗时与状态）
 - 通道二：**Webhook 推送**（POST JSON，可接企业微信/Telegram/自建服务/邮箱网关）
-- **音效反馈**：任务完成"叮"、失败低音、审批出现提醒音（PowerShell Beep，零依赖）
+- **音效反馈**：任务完成"叮"、失败低音、审批出现提醒音、**提问表单出现提示音**（PowerShell Beep，零依赖）
 - 「仅后台通知」：浏览器标签页在前台时不打扰
 
 ### 📚 私有知识库
 - 索引本地文档目录（txt/md/json/yaml/js/ts 等文本格式），**完全离线**
 - 提问时模型自动调用 **`kb_search` 工具**检索（BM25 词频打分），返回文件+片段+分数
-- **`web_capture` 工具**：给个 URL → 抓取正文 → 直接入库，之后可用 `kb_search` 检索
+- **`web_capture` 工具**：给个 URL → 抓取正文 → 直接入库；返回**索引文件位置**与取回方式
+- **`kb_recent` 工具**：**直接列出**最近捕获的网页（标题/URL/块数/时间/索引路径），无需盲搜
+- **重建不丢网页库**：本地目录"重新索引"时自动合并保留所有网页捕获，互不覆盖
 - 文档不离开本机，不依赖 embedding 模型
 
 ## 工作原理（30 秒）
 
 1. 本插件是 DSH **组合包（bundle）**：`package.json` 声明 `dsh.bundle` + `dsh.client`。
-2. host 半边监听 `agent/status`（计时通知）+ 索引知识库 + 注册 `kb_search` 模型工具 + 提供 `/wf/*` 路由；浏览器半边是设置页。
+2. host 半边监听 `agent/status`（计时通知）+ 索引知识库 + 注册 `kb_search`/`web_capture`/`kb_recent` 模型工具 + 提供 `/wf/*` 路由；浏览器半边是设置页。
 3. 配置持久化在插件自己的 `config.json`（`GET/POST /wf/settings`），索引数据在 `kb-index.json`（均已 gitignore）。
 
 ## 环境要求
@@ -64,9 +66,17 @@ pnpm dsh plugin --profile web remove dsh-workmate
 
 **任务通知**：启用开关 / 时长阈值（默认 60 秒）/ 系统通知 / Webhook URL / 失败通知 / 仅后台通知 / **音效反馈**。
 
-**私有知识库**：索引目录 / 支持格式 / 分块大小与重叠 / 重新索引按钮 / 索引统计；模型可用 `kb_search` 检索、`web_capture` 抓网页入库。
+**私有知识库**：索引目录 / 支持格式 / 分块大小与重叠 / 重新索引按钮 / 索引统计；模型可用 `kb_search` 检索、`web_capture` 抓网页入库、`kb_recent` 直接列出已存网页。
 
 出厂默认：通知开、阈值 60s、Toast 开、仅后台开、音效开；知识库未配置（填目录并点"重新索引"即启用）。
+
+## 模型工具一览
+
+| 工具 | 用途 |
+|---|---|
+| `kb_search(query)` | 检索知识库，返回匹配块（文件/片段/分数） |
+| `web_capture(url)` | 抓取网页正文入库，返回索引文件位置与取回方式 |
+| `kb_recent(limit?)` | 直接列出最近捕获的网页（标题/URL/块数/时间），最新在前 |
 
 ## Webhook 请求体
 
@@ -88,7 +98,7 @@ pnpm dsh plugin --profile web remove dsh-workmate
 dsh-workmate/
 ├── package.json          # dsh.bundle + dsh.client 声明
 ├── cordis.patch.yml      # 组合层：插入 workmate 行
-├── index.js              # host 半边：通知监听 + 知识库索引/检索 + kb_search 工具 + /wf/* 路由
+├── index.js              # host 半边：通知监听 + 知识库索引/检索 + kb_search/web_capture/kb_recent 工具 + /wf/* 路由
 ├── client.js             # 浏览器半边：设置页 UI
 ├── README.md
 ├── 使用与配置文档.md      # 完整使用与配置说明
