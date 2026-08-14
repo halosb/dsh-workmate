@@ -1,0 +1,42 @@
+{
+  "name": "dsh-workmate",
+  "version": "0.1.0",
+  "description": "工作搭档：长任务完成通知（系统 Toast / Webhook）+ 私有知识库（本地索引 + kb_search 模型工具）。Task-completion notifications and a private knowledge base for DeepSeek Harness.",
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "plugin",
+    "notification",
+    "knowledge-base",
+    "rag",
+    "cordis"
+  ],
+  "license": "MIT",
+  "author": "芝麻 (halosb) <i@halosb.com>",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "README.md",
+    "使用与配置文档.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  }
+}

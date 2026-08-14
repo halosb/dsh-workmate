@@ -1,0 +1,104 @@
+# dsh-workmate（工作搭档）
+
+> DeepSeek Harness 工作搭档插件：**任务完成通知** + **私有知识库**。
+> A workmate for DeepSeek Harness: task-completion notifications and a private knowledge base.
+
+以官方插件机制安装，**不修改任何 DSH 源码**，不需要重新构建前端。
+
+## 特性
+
+### 🔔 任务完成通知
+- 监听 Agent 状态（`agent/status` idle ⇄ running）计时，**长任务**（超过阈值）结束/失败时提醒
+- 通道一：**Windows 原生 Toast**（标题=会话标题/工作区名，正文=耗时与状态）
+- 通道二：**Webhook 推送**（POST JSON，可接企业微信/Telegram/自建服务/邮箱网关）
+- 「仅后台通知」：浏览器标签页在前台时不打扰
+
+### 📚 私有知识库
+- 索引本地文档目录（txt/md/json/yaml/js/ts 等文本格式），**完全离线**
+- 提问时模型自动调用 **`kb_search` 工具**检索（BM25 词频打分），返回文件+片段+分数
+- 文档不离开本机，不依赖 embedding 模型
+
+## 工作原理（30 秒）
+
+1. 本插件是 DSH **组合包（bundle）**：`package.json` 声明 `dsh.bundle` + `dsh.client`。
+2. host 半边监听 `agent/status`（计时通知）+ 索引知识库 + 注册 `kb_search` 模型工具 + 提供 `/wf/*` 路由；浏览器半边是设置页。
+3. 配置持久化在插件自己的 `config.json`（`GET/POST /wf/settings`），索引数据在 `kb-index.json`（均已 gitignore）。
+
+## 环境要求
+
+- DeepSeek Harness（源码运行 Node ≥ 22 + pnpm，或已安装的 `dsh` CLI）
+- Windows 系统通知需要允许 PowerShell/应用通知权限
+
+## 安装
+
+```powershell
+# 从 GitHub 安装
+dsh plugin --profile web add github:halosb/dsh-workmate
+
+# 或本地目录
+dsh plugin --profile web add ./dsh-workmate
+
+# 源码运行环境
+pnpm dsh plugin --profile web add ./dsh-workmate
+
+# 装完必须重启
+dsh web          # 默认端口 3080
+```
+
+卸载：
+
+```powershell
+dsh plugin --profile web remove dsh-workmate
+```
+
+> 纯 JS、无构建步骤，git 安装不需要 pnpm 的 prepare/allowBuilds 授权。
+
+## 使用与配置
+
+打开 Web UI → **设置 → 工作搭档**，全部可视化配置（详细说明见 [`使用与配置文档.md`](./使用与配置文档.md)）：
+
+**任务通知**：启用开关 / 时长阈值（默认 60 秒）/ 系统通知 / Webhook URL / 失败通知 / 仅后台通知。
+
+**私有知识库**：索引目录 / 支持格式 / 分块大小与重叠 / 重新索引按钮 / 索引统计。
+
+出厂默认：通知开、阈值 60s、Toast 开、仅后台开；知识库未配置（填目录并点"重新索引"即启用）。
+
+## Webhook 请求体
+
+任务结束时 `POST` 到配置的 URL（`Content-Type: application/json`）：
+
+```json
+{
+  "sessionId": "…",
+  "title": "会话标题或工作区名",
+  "status": "done" | "error",
+  "durationMs": 132000,
+  "message": "任务完成，用时 2 分 12 秒"
+}
+```
+
+## 仓库结构
+
+```
+dsh-workmate/
+├── package.json          # dsh.bundle + dsh.client 声明
+├── cordis.patch.yml      # 组合层：插入 workmate 行
+├── index.js              # host 半边：通知监听 + 知识库索引/检索 + kb_search 工具 + /wf/* 路由
+├── client.js             # 浏览器半边：设置页 UI
+├── README.md
+├── 使用与配置文档.md      # 完整使用与配置说明
+├── config.json           # 运行时生成：用户配置（已 gitignore）
+├── kb-index.json         # 运行时生成：知识库索引（已 gitignore）
+└── LICENSE
+```
+
+## 反馈
+
+有问题或建议，欢迎通过邮箱联系作者：
+
+- 📮 **反馈邮箱**：i@halosb.com
+- 作者：芝麻 (halosb)
+
+## 许可证
+
+[MIT](./LICENSE)

@@ -1,0 +1,7 @@
+node_modules/
+config.json
+kb-index.json
+*.log
+.DS_Store
+Thumbs.db
+.idea/

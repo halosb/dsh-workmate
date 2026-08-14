@@ -1,0 +1,9 @@
+# dsh-workmate — 组合包 patch 层
+# 作者：芝麻 (halosb) <i@halosb.com>
+# License: MIT
+#
+# 只插入一行：让 loader 在双平面挂载本包。逻辑都在 host 半边（index.js），
+# 设置页 UI 在浏览器端（client.js）。
+- insert:
+    - id: workmate
+      name: dsh-workmate
