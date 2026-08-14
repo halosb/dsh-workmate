@@ -32,23 +32,26 @@
 ## 安装
 
 ```powershell
-# 从 GitHub 安装
+# 从 GitHub 安装（已安装 CLI）
 dsh plugin --profile web add github:halosb/dsh-workmate
+
+# 从 GitHub 安装（源码运行环境）
+pnpm dsh plugin --profile web add github:halosb/dsh-workmate
 
 # 或本地目录
 dsh plugin --profile web add ./dsh-workmate
-
-# 源码运行环境
 pnpm dsh plugin --profile web add ./dsh-workmate
 
 # 装完必须重启
 dsh web          # 默认端口 3080
+pnpm dsh web     # 源码运行环境
 ```
 
 卸载：
 
 ```powershell
 dsh plugin --profile web remove dsh-workmate
+pnpm dsh plugin --profile web remove dsh-workmate
 ```
 
 > 纯 JS、无构建步骤，git 安装不需要 pnpm 的 prepare/allowBuilds 授权。
