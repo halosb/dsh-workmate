@@ -188,6 +188,31 @@ check('重启后网页捕获仍在（启动顺序已修）',
 check('Toast 标题经环境变量传递（不拼脚本）', source.includes('WM_TITLE') && !/BalloonTipTitle\s*=\s*\$\{/.test(source))
 check('web_capture 有超时与私网拦截', source.includes('AbortSignal.timeout') && source.includes('assertPublicHost'))
 
+// profile 必须从包路径推导：宿主进程里只有 DSH_HOME、没有 DSH_PROFILE，
+// 只靠环境变量会让 desktop / web 两个 profile 共用 plugin-data\default\。
+{
+  const fakeHome = join(HOME, 'fakehome')
+  const fakePlugin = join(fakeHome, 'profiles', 'myprofile', 'node_modules', 'dsh-workmate')
+  await mkdir(fakePlugin, { recursive: true })
+  await writeFile(join(fakePlugin, '_dsh-tools-stub.mjs'), 'export function defineTool(c) { return c }\n')
+  await writeFile(join(fakePlugin, 'index.js'), source.replace("'@deepseek-ai/dsh-tools'", "'./_dsh-tools-stub.mjs'"))
+  const savedHome = process.env.DSH_HOME
+  const savedProfile = process.env.DSH_PROFILE
+  // 故意给错的环境变量：正确的 profile 只能来自包路径
+  process.env.DSH_HOME = join(HOME, 'wrong-home')
+  process.env.DSH_PROFILE = 'wrongprofile'
+  const fake = makeCtx()
+  const mod = await import(pathToFileURL(join(fakePlugin, 'index.js')).href + '?v=profile')
+  mod.apply(fake.ctx)
+  await sleep(900)
+  process.env.DSH_HOME = savedHome
+  process.env.DSH_PROFILE = savedProfile
+  check('profile 从包路径推导（不被错误的 DSH_HOME/DSH_PROFILE 带偏）',
+    await exists(join(fakeHome, 'plugin-data', 'myprofile', 'dsh-workmate')),
+    join(fakeHome, 'plugin-data', 'myprofile', 'dsh-workmate'))
+  check('不会误建 plugin-data/default', !(await exists(join(fakeHome, 'plugin-data', 'default'))))
+}
+
 server.close()
 await rm(HOME, { recursive: true, force: true })
 await rm(stubPath, { force: true })

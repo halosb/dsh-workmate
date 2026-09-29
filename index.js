@@ -31,15 +31,54 @@ export const inject = ['webServer', 'tools']
  * 放在 pnpm 拥有的包目录之外，`dsh plugin update/remove` 不会碰到它。
  */
 const PACKAGE_DIR = dirname(fileURLToPath(import.meta.url))
-const DSH_HOME = typeof process.env.DSH_HOME === 'string' && process.env.DSH_HOME !== ''
-  ? process.env.DSH_HOME
-  : join(homedir(), '.dsh')
-const PROFILE = typeof process.env.DSH_PROFILE === 'string' && process.env.DSH_PROFILE !== ''
-  ? process.env.DSH_PROFILE
-  : 'default'
+
+/**
+ * 从包路径推导 DSH_HOME 与 profile。插件装在
+ * `<DSH_HOME>\profiles\<profile>\node_modules\<包名>\`，这条路比环境变量可靠：
+ * 实测宿主进程里只有 DSH_HOME、**没有** DSH_PROFILE，只靠环境变量会让所有
+ * profile 都落到 plugin-data\default\ 上互相覆盖。
+ */
+function deriveProfilePaths(packageDir) {
+  const matched = /^(.*)[\\/]profiles[\\/]([^\\/]+)[\\/]node_modules[\\/]/i.exec(packageDir)
+  return matched === null ? null : { home: matched[1], profile: matched[2] }
+}
+const DERIVED = deriveProfilePaths(PACKAGE_DIR)
+const DSH_HOME = DERIVED !== null
+  ? DERIVED.home
+  : (typeof process.env.DSH_HOME === 'string' && process.env.DSH_HOME !== '' ? process.env.DSH_HOME : join(homedir(), '.dsh'))
+const PROFILE = DERIVED !== null
+  ? DERIVED.profile
+  : (typeof process.env.DSH_PROFILE === 'string' && process.env.DSH_PROFILE !== '' ? process.env.DSH_PROFILE : 'default')
 const DATA_DIR = join(DSH_HOME, 'plugin-data', PROFILE, 'dsh-workmate')
 const CONFIG_PATH = join(DATA_DIR, 'config.json')
 const INDEX_PATH = join(DATA_DIR, 'kb-index.json')
+
+/**
+ * 0.3.0 在拿不到 profile 名时把数据写进了 plugin-data/default/，这里按需搬回当前 profile。
+ * 只搬不覆盖：新位置已有的文件保留。
+ */
+async function migrateDefaultProfileData() {
+  const legacyDir = join(DSH_HOME, 'plugin-data', 'default', 'dsh-workmate')
+  if (legacyDir === DATA_DIR) return
+  try {
+    await stat(legacyDir)
+  } catch {
+    return // 没有旧目录
+  }
+  await mkdir(DATA_DIR, { recursive: true })
+  for (const file of ['config.json', 'kb-index.json']) {
+    const target = join(DATA_DIR, file)
+    try {
+      await stat(target)
+      continue
+    } catch { /* 目标不存在才搬 */ }
+    try {
+      await copyFile(join(legacyDir, file), target)
+      await rm(join(legacyDir, file), { force: true })
+      warnings.push(`已把 ${file} 从 plugin-data/default 迁移到 ${DATA_DIR}`)
+    } catch { /* 单个失败忽略 */ }
+  }
+}
 
 /** 老版本把数据写在包目录里；首次启动搬到数据目录（不覆盖已有新文件）。 */
 async function migrateLegacyData() {
@@ -1052,6 +1091,7 @@ export function apply(ctx) {
   // 必须串行：原来 loadIndex 与 reindex 并发，reindex 会在索引还没读完时把
   // "本地扫描 + 空" 当成合并结果写回磁盘，直接清空网页库。
   const ready = (async () => {
+    await migrateDefaultProfileData()
     await migrateLegacyData()
     await loadIndex()
     await readConfig()
