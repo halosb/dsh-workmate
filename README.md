@@ -75,7 +75,7 @@ pnpm dsh plugin --profile web remove dsh-workmate
 
 **任务通知**：启用开关 / 时长阈值（默认 60 秒）/ 系统通知 / Webhook URL / 失败通知 / 仅后台通知 / **音效反馈**。
 
-**私有知识库**：索引目录 / 支持格式 / 分块大小与重叠 / 重新索引按钮 / 索引统计；模型可用 `kb_search` 检索、`web_capture` 抓网页入库、`kb_recent` 直接列出已存网页。
+**私有知识库**：索引目录 / 支持格式 / 分块大小与重叠 / 重新索引按钮 / 索引统计；模型可用 `kb_search` 检索、`web_capture` 抓网页入库、`kb_recent` 直接列出已存网页、`kb_forget` 删除某条网页捕获。
 
 出厂默认：通知开、阈值 60s、Toast 开、仅后台开、音效开；知识库未配置（填目录并点"重新索引"即启用）。
 
@@ -86,6 +86,7 @@ pnpm dsh plugin --profile web remove dsh-workmate
 | `kb_search(query)` | 检索知识库，返回匹配块（文件/片段/分数） |
 | `web_capture(url)` | 抓取网页正文入库，返回索引文件位置与取回方式 |
 | `kb_recent(limit?)` | 直接列出最近捕获的网页（标题/URL/块数/时间），最新在前 |
+| `kb_forget(target)` | 删除网页捕获（URL / 标题 / 可辨识片段均可匹配）；只删 `web_capture` 抓的，本地文档由重新索引决定 |
 
 ## Webhook 请求体
 

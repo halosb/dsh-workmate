@@ -569,15 +569,140 @@ function listRecentCaptures(limit = 10) {
   }
 }
 
-/** 简易 HTML 正文提取：去 script/style、去标签、解码常见实体、压缩空白。 */
-function extractText(html) {
-  const withoutScripts = html
-    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<noscript[\s\S]*?<\/noscript>/gi, ' ')
-    .replace(/<!--[\s\S]*?-->/g, ' ')
-  return withoutScripts
+/** 归一化 URL 便于比较：去末尾斜杠、去 hash、统一小写主机名。 */
+function normalizeUrl(value) {
+  try {
+    const parsed = new URL(value)
+    parsed.hash = ''
+    const path = parsed.pathname.replace(/\/+$/, '')
+    return `${parsed.protocol}//${parsed.host.toLowerCase()}${path}${parsed.search}`
+  } catch {
+    return value.trim().replace(/\/+$/, '')
+  }
+}
+
+/**
+ * 删除一条或多条网页捕获（只删 web_capture 抓的，本地文档由重新索引决定）。
+ * 支持传完整 URL、标题，或一段能唯一匹配的片段。
+ */
+function forgetCapture(target) {
+  if (!indexIsUsable(kbIndex) || kbIndex.chunks.length === 0) {
+    return { ok: false, message: '知识库为空。' }
+  }
+  const needle = typeof target === 'string' ? target.trim() : ''
+  if (needle === '') return { ok: false, message: '请提供要删除的网页 URL 或标题。' }
+  const normalizedNeedle = normalizeUrl(needle)
+  const removedDocs = new Set()
+  let removedChunks = 0
+  const kept = []
+  for (const chunk of kbIndex.chunks) {
+    if (typeof chunk.doc !== 'string' || !chunk.doc.startsWith('web: ')) {
+      kept.push(chunk)
+      continue
+    }
+    const urlMatch = /\((https?:\/\/[^)]+)\)\s*$/.exec(chunk.doc)
+    const url = urlMatch === null ? '' : urlMatch[1]
+    const title = chunk.doc.slice(5).replace(/\s*\([^)]*\)\s*$/, '').trim()
+    const hit = (url !== '' && normalizeUrl(url) === normalizedNeedle)
+      || title === needle
+      || needle.length >= 4 && ((url !== '' && url.includes(needle)) || title.includes(needle))
+    if (hit) {
+      removedDocs.add(chunk.doc)
+      removedChunks += 1
+      continue
+    }
+    kept.push(chunk)
+  }
+  if (removedChunks === 0) {
+    const available = listRecentCaptures(20)
+    return {
+      ok: false,
+      message: '没有匹配的网页捕获。',
+      captures: available.ok === true ? available.captures.map(c => c.url) : [],
+    }
+  }
+  kbIndex.chunks = kept.map((chunk, i) => Object.assign({}, chunk, { id: i }))
+  kbIndex.stats = Object.assign({}, kbIndex.stats, {
+    chunkCount: kbIndex.chunks.length,
+    wordCount: countWords(kbIndex.chunks),
+    indexedAt: Date.now(),
+  })
+  invalidateSearch()
+  return {
+    ok: true,
+    removedDocs: [...removedDocs],
+    removedChunks,
+    remainingChunks: kbIndex.chunks.length,
+    indexFile: INDEX_PATH,
+  }
+}
+
+/**
+ * 正文提取：先锁定正文容器，再剥噪声标签，最后解码实体。
+ *
+ * 旧实现是"去 script/style → 去所有标签 → 压成一行"，结果把侧边栏导航
+ * （"首页 文库 数据统计…"）和页脚一起收进库，还把整篇压成一个没有段落的大字符串。
+ * 导出以便 tests/host-smoke.mjs 用夹具直接验证。
+ */
+export function extractText(html) {
+  const picked = pickContentHtml(html)
+  const stripped = stripNoiseElements(picked.content, picked.pageLevel)
+  // 块级收尾转换行：段落边界保留，行内标签转空格（避免把词切开）
+  const withBreaks = stripped
+    .replace(/<\s*(?:br|\/p|\/div|\/li|\/h[1-6]|\/tr|\/section|\/article|\/blockquote|\/pre|\/dd|\/dt)\s*\/?>/gi, '\n')
     .replace(/<[^>]+>/g, ' ')
+  const lines = decodeEntities(withBreaks)
+    .split('\n')
+    .map(line => line.replace(/[ \t\u00a0]+/g, ' ').trim())
+    // 丢掉空行与纯标点行（'•'、'|'、'—' 这类装饰性分隔符）
+    .filter(line => line !== '' && /[\p{L}\p{N}]/u.test(line))
+  // 段落级去重：不少站点把摘要卡与正文放在同一容器里，重复段落只留首次
+  const seen = new Set()
+  const kept = []
+  for (const line of lines) {
+    if (line.length > 40) {
+      if (seen.has(line)) continue
+      seen.add(line)
+    }
+    kept.push(line)
+  }
+  return kept.join('\n')
+}
+
+/** 噪声标签：脚本、样式、导航、侧栏、页脚、表单等。 */
+const NOISE_TAGS = ['script', 'style', 'noscript', 'template', 'svg', 'iframe', 'nav', 'aside', 'footer', 'form', 'button', 'select', 'textarea']
+
+/** 正文容器：article / main / [role=main] 取最长的一块；都太短则退回 body。 */
+function pickContentHtml(html) {
+  const patterns = [
+    /<article\b[^>]*>([\s\S]*?)<\/article>/gi,
+    /<main\b[^>]*>([\s\S]*?)<\/main>/gi,
+    /<div\b[^>]*\brole\s*=\s*["']main["'][^>]*>([\s\S]*?)<\/div>/gi,
+  ]
+  for (const pattern of patterns) {
+    let best = ''
+    for (const matched of html.matchAll(pattern)) {
+      if (matched[1].length > best.length) best = matched[1]
+    }
+    if (best.trim().length > 400) return { content: best, pageLevel: false }
+  }
+  const body = /<body\b[^>]*>([\s\S]*?)<\/body>/i.exec(html)
+  if (body !== null) return { content: body[1], pageLevel: true }
+  return { content: html, pageLevel: true }
+}
+
+/** 剥掉噪声标签；pageLevel 时连 <header> 一起去掉（页面级头部通常是站点导航）。 */
+function stripNoiseElements(html, pageLevel) {
+  let out = html.replace(/<!--[\s\S]*?-->/g, ' ')
+  const tags = pageLevel ? NOISE_TAGS.concat('header') : NOISE_TAGS
+  for (const tag of tags) {
+    out = out.replace(new RegExp(`<${tag}\\b[^>]*>[\\s\\S]*?<\\/${tag}>`, 'gi'), ' ')
+  }
+  return out.replace(/<(?:script|style|svg|iframe|link|meta|br|hr|img|source|track)\b[^>]*\/?>/gi, ' ')
+}
+
+function decodeEntities(text) {
+  return text
     .replace(/&nbsp;/gi, ' ')
     .replace(/&amp;/gi, '&')
     .replace(/&lt;/gi, '<')
@@ -586,8 +711,6 @@ function extractText(html) {
     .replace(/&#39;|&apos;/gi, "'")
     .replace(/&#x([0-9a-f]+);/gi, (_, hex) => safeCodePoint(parseInt(hex, 16)))
     .replace(/&#(\d+);/g, (_, n) => safeCodePoint(Number(n)))
-    .replace(/\s+/g, ' ')
-    .trim()
 }
 
 function safeCodePoint(value) {
@@ -599,8 +722,8 @@ function safeCodePoint(value) {
   }
 }
 
-/** 提取 <title>。 */
-function extractTitle(html) {
+/** 提取 <title>。导出以便测试。 */
+export function extractTitle(html) {
   const match = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html)
   if (match === null) return ''
   return match[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim().slice(0, 120)
@@ -1249,6 +1372,29 @@ export function apply(ctx) {
       await ready
       const n = typeof args.limit === 'number' && Number.isFinite(args.limit) ? Math.floor(args.limit) : 10
       return listRecentCaptures(n)
+    },
+  }))
+
+  // 模型工具：删除网页捕获（解决"存进去删不掉，只能重建整个索引"）。
+  ctx.tools.register(defineTool({
+    name: 'kb_forget',
+    description:
+      'Remove one or more captured web pages from the dsh-workmate private knowledge base. '
+      + 'Pass the page URL, its title, or a distinctive fragment of either. '
+      + 'Only pages added by web_capture are removable this way — local documents are governed by reindexing. '
+      + 'Use this when the user wants to delete something they saved earlier. Returns what was removed.',
+    parameters: {
+      target: { type: 'string', required: true, description: 'Page URL, title, or a distinctive fragment of either.' },
+    },
+    output: {
+      schema: { type: 'json' },
+      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }],
+    },
+    async execute(args) {
+      await ready
+      const result = forgetCapture(String(args.target ?? ''))
+      if (result.ok === true) await saveIndex()
+      return result
     },
   }))
 

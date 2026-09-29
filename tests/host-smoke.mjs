@@ -89,6 +89,7 @@ const jsonReq = (payload, headers = {}) => ({
 async function boot(version) {
   const mod = await import(pathToFileURL(underTestPath).href + '?v=' + version)
   const state = makeCtx()
+  state.mod = mod
   mod.apply(state.ctx)
   await sleep(900) // 等 ready 链（迁移 → 读索引 → 读配置）
   return state
@@ -187,6 +188,64 @@ check('重启后网页捕获仍在（启动顺序已修）',
 
 check('Toast 标题经环境变量传递（不拼脚本）', source.includes('WM_TITLE') && !/BalloonTipTitle\s*=\s*\$\{/.test(source))
 check('web_capture 有超时与私网拦截', source.includes('AbortSignal.timeout') && source.includes('assertPublicHost'))
+
+// ── 正文提取：只取正文容器、剥掉导航/页脚、保留段落 ───────────────────────
+{
+  const filler = '这是一段用于验证提取器的正文内容，需要足够长才会被当成正文保留下来。'
+  const fixture = [
+    '<html><head><title>夹具页面</title></head><body>',
+    '<aside id="fly-site-sidebar"><nav>首页 文库 数据统计 文章订阅 友情链接 留言板 我的图库</nav></aside>',
+    '<article><h1>夹具标题</h1>',
+    `<p>${filler.repeat(3)}</p>`,
+    `<p>${'第二段正文，同样需要足够长才能被保留并形成独立段落。'.repeat(3)}</p>`,
+    '</article>',
+    '<footer>版权所有 © 2026 某站点</footer>',
+    '</body></html>',
+  ].join('')
+  const text = first.mod.extractText(fixture)
+  check('提取器：剥掉侧边栏导航', !text.includes('友情链接') && !text.includes('文库'))
+  check('提取器：剥掉页脚', !text.includes('版权所有'))
+  check('提取器：保留正文', text.includes('这是一段用于验证提取器的正文内容'))
+  check('提取器：保留段落结构（不再压成一行）', text.split('\n').length >= 2, `${text.split('\n').length} 段`)
+  check('提取器：标题提取正常', first.mod.extractTitle(fixture) === '夹具页面')
+  const fallback = first.mod.extractText('<body><nav>首页 文库 友情链接</nav><div>正文内容在这里</div></body>')
+  check('提取器：无正文容器时退回 body 且仍剥导航', !fallback.includes('友情链接') && fallback.includes('正文内容'))
+}
+
+// ── kb_forget：网页捕获可删，本地文档不受影响 ─────────────────────────────
+{
+  const index = JSON.parse(await readFile(join(DATA, 'kb-index.json'), 'utf8'))
+  index.chunks.push(
+    { id: index.chunks.length, doc: 'web: 待删除的页面 (http://example.com/gone)', text: '这是准备被 kb_forget 删掉的网页正文内容。' },
+    { id: index.chunks.length + 1, doc: 'web: 另一个页面 (http://example.com/keep)', text: '这个页面不在删除目标里，必须留着。' },
+  )
+  await writeFile(join(DATA, 'kb-index.json'), JSON.stringify(index))
+  const state = await boot(3)
+  const before = JSON.parse(await readFile(join(DATA, 'kb-index.json'), 'utf8'))
+  const localBefore = before.chunks.filter(c => typeof c.doc === 'string' && !c.doc.startsWith('web: ')).length
+
+  const forget = state.tools.get('kb_forget')
+  check('kb_forget 已注册', typeof forget?.execute === 'function')
+
+  const miss = await forget.execute({ target: 'http://example.com/nothing-here' })
+  check('kb_forget：无匹配时明确报告', miss.ok === false && Array.isArray(miss.captures), miss.message)
+
+  const hit = await forget.execute({ target: 'http://example.com/gone' })
+  check('kb_forget：按 URL 删除成功', hit.ok === true && hit.removedChunks === 1,
+    `removedChunks=${hit.removedChunks} remaining=${hit.remainingChunks}`)
+
+  const after = JSON.parse(await readFile(join(DATA, 'kb-index.json'), 'utf8'))
+  const webDocs = after.chunks.filter(c => typeof c.doc === 'string' && c.doc.startsWith('web: ')).map(c => c.doc)
+  check('kb_forget：目标已从磁盘移除', !webDocs.some(d => d.includes('example.com/gone')))
+  check('kb_forget：其他网页保留', webDocs.some(d => d.includes('example.com/keep')))
+  check('kb_forget：本地文档不受影响',
+    after.chunks.filter(c => typeof c.doc === 'string' && !c.doc.startsWith('web: ')).length === localBefore,
+    `本地块 ${localBefore}`)
+  check('kb_forget：块 id 重新编号', after.chunks.every((c, i) => c.id === i))
+
+  const byTitle = await forget.execute({ target: '另一个页面' })
+  check('kb_forget：按标题片段删除', byTitle.ok === true, JSON.stringify(byTitle.removedDocs ?? []))
+}
 
 // profile 必须从包路径推导：宿主进程里只有 DSH_HOME、没有 DSH_PROFILE，
 // 只靠环境变量会让 desktop / web 两个 profile 共用 plugin-data\default\。
