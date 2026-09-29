@@ -89,13 +89,38 @@ window.__ModuleLoader__.load({
         store.set(Object.assign({}, DEFAULTS, cfg && typeof cfg === 'object' ? cfg : {}))
       }).catch(function () {})
 
-      function persist(cfg) {
+      // 持久化：防抖 300ms + 串行发送（同一时刻只有一个请求在飞，避免乱序覆盖）。
+      // 原来每次按键都整文件 POST，多个 in-flight 请求乱序到达会让磁盘上的配置
+      // 不是界面最后一次状态。
+      var persistTimer = null
+      var persistInFlight = false
+      var persistPending = null
+
+      function flushPersist() {
+        persistTimer = null
+        if (persistInFlight || persistPending === null) return
+        var cfg = persistPending
+        persistPending = null
+        persistInFlight = true
         fetch('/wf/settings', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify(cfg),
-        }).catch(function () {})
+        }).catch(function () {}).then(function () {
+          persistInFlight = false
+          if (persistPending !== null) flushPersist()
+        })
       }
+
+      function persist(cfg) {
+        persistPending = cfg
+        if (persistTimer !== null) clearTimeout(persistTimer)
+        persistTimer = setTimeout(flushPersist, 300)
+      }
+
+      ctx.effect(function () {
+        return function () { if (persistTimer !== null) clearTimeout(persistTimer) }
+      }, 'dsh-workmate: pending settings write')
 
       // 可见性心跳：支持「仅后台通知」。
       function heartbeat() {
@@ -158,30 +183,69 @@ window.__ModuleLoader__.load({
       )
     }
 
+    /**
+     * 数字输入框。清空时只改显示、不写配置——<input type="number"> 的空值是 ''，
+     * 而 Number('') === 0，原来一清空就把"时长阈值"静默写成 0ms（每个任务都通知）。
+     * 失焦后回填真实值。
+     */
+    function NumberInput(props) {
+      var state = react.useState(null)
+      var draft = state[0]
+      var setDraft = state[1]
+      return el('input', {
+        type: 'number',
+        className: props.className,
+        min: props.min,
+        step: props.step,
+        value: draft !== null ? draft : String(props.value),
+        onChange: function (e) {
+          var raw = e.target.value
+          setDraft(raw)
+          if (raw === '') return
+          var parsed = Number(raw)
+          if (!isFinite(parsed)) return
+          props.onCommit(parsed)
+        },
+        onBlur: function () { setDraft(null) },
+      })
+    }
+
     function WorkmateSection(props) {
       var store = props.store
       var persist = props.persist
       var tick = react.useState(0)
       var stats = react.useState(null)
+      var notes = react.useState([])
       react.useEffect(function () {
         return store.subscribe(function () { tick[1](function (n) { return n + 1 }) })
       }, [])
       // 进入设置页时拉取当前索引状态，避免服务端已索引却显示"未索引"。
+      // 同时把 host 端的读取告警显示出来（原来读盘/解析失败是静默回退的）。
       react.useEffect(function () {
         fetch('/wf/kb/status').then(function (r) { return r.json() }).then(function (json) {
-          if (json !== null && json.configured === true) stats[1](json.stats)
+          if (json === null || typeof json !== 'object') return
+          if (json.configured === true) stats[1](json.stats)
+          if (Array.isArray(json.warnings) && json.warnings.length > 0) notes[1](json.warnings)
         }).catch(function () {})
       }, [])
       var s = store.get()
 
       function setField(field, value) {
-        var next = Object.assign({}, s)
+        // 每次从 store 现取，而不是用本次渲染的快照：React 更新是异步批处理的，
+        // 同一渲染周期内连续改两个字段时，旧写法会让后一次覆盖前一次。
+        var next = Object.assign({}, store.get())
         next[field] = value
         store.set(next)
         persist(next)
       }
 
+      var busyState = react.useState(false)
+      var busy = busyState[0]
+      var setBusy = busyState[1]
+
       function reindex() {
+        if (busy) return
+        setBusy(true)
         stats[1]('索引中…')
         fetch('/wf/kb/reindex', {
           method: 'POST',
@@ -190,7 +254,7 @@ window.__ModuleLoader__.load({
         }).then(function (r) { return r.json() }).then(function (json) {
           if (json !== null && json.ok === true) stats[1](json.stats)
           else stats[1]({ message: json && json.message ? json.message : '索引失败' })
-        }).catch(function () { stats[1]({ message: '索引失败' }) })
+        }).catch(function () { stats[1]({ message: '索引失败' }) }).then(function () { setBusy(false) })
       }
 
       function resetAll() {
@@ -202,7 +266,7 @@ window.__ModuleLoader__.load({
       if (typeof stats[0] === 'string') statText = stats[0]
       else if (stats[0] !== null && typeof stats[0] === 'object') {
         if (stats[0].message) statText = stats[0].message
-        else statText = '文件 ' + stats[0].fileCount + ' · 块 ' + stats[0].chunkCount + ' · 词 ' + stats[0].wordCount
+        else statText = '文件 ' + stats[0].fileCount + ' · 块 ' + stats[0].chunkCount + ' · 词元 ' + stats[0].wordCount
       }
 
       return el('div', { className: 'dsh-wm-section' },
@@ -218,10 +282,10 @@ window.__ModuleLoader__.load({
         Row({
           title: '时长阈值（秒）',
           caption: 'Agent 持续运行超过该时长后结束才算“长任务”，短任务不打扰。',
-          children: el('input', {
-            type: 'number', className: 'dsh-wm-input dsh-wm-inputNum', min: '0', step: '5',
-            value: String(Math.round((s.notifyMinDurationMs || 0) / 1000)),
-            onChange: function (e) { setField('notifyMinDurationMs', Math.max(0, Number(e.target.value)) * 1000) },
+          children: el(NumberInput, {
+            className: 'dsh-wm-input dsh-wm-inputNum', min: '0', step: '5',
+            value: Math.round((s.notifyMinDurationMs || 0) / 1000),
+            onCommit: function (v) { setField('notifyMinDurationMs', Math.max(0, Math.round(v)) * 1000) },
           }),
         }),
         Row({
@@ -277,27 +341,40 @@ window.__ModuleLoader__.load({
           title: '分块大小 / 重叠',
           caption: '文档切块长度与重叠字符数，检索粒度。',
           children: el('span', { style: { display: 'inline-flex', alignItems: 'center', gap: '8px' } },
-            el('input', {
-              type: 'number', className: 'dsh-wm-input dsh-wm-inputNum', min: '100', step: '100',
-              value: String(s.kbChunkSize),
-              onChange: function (e) { setField('kbChunkSize', Math.max(100, Number(e.target.value))) },
+            el(NumberInput, {
+              className: 'dsh-wm-input dsh-wm-inputNum', min: '100', step: '100',
+              value: s.kbChunkSize,
+              onCommit: function (v) { setField('kbChunkSize', Math.max(100, Math.round(v))) },
             }),
             el('span', { className: 'dsh-wm-caption' }, '重叠'),
-            el('input', {
-              type: 'number', className: 'dsh-wm-input dsh-wm-inputNum', min: '0', step: '50',
-              value: String(s.kbOverlap),
-              onChange: function (e) { setField('kbOverlap', Math.max(0, Number(e.target.value))) },
+            el(NumberInput, {
+              className: 'dsh-wm-input dsh-wm-inputNum', min: '0', step: '50',
+              value: s.kbOverlap,
+              onCommit: function (v) {
+                // 重叠必须小于分块大小，否则步长退化为 1、逐字切块。
+                var size = Math.max(100, Math.round(Number(store.get().kbChunkSize) || 1000))
+                setField('kbOverlap', Math.max(0, Math.min(Math.round(v), size - 1)))
+              },
             }),
           ),
         }),
         Row({
           title: '重新索引',
-          caption: '文档变更后手动重建索引（自动保留网页捕获）；重启时也会自动索引。',
+          caption: '文档变更后手动重建索引（只重读变更过的文件，自动保留网页捕获）；重启时也会增量索引。',
           children: el('div', { className: 'dsh-wm-control', style: { alignItems: 'center' } },
-            el('button', { type: 'button', className: 'dsh-wm-button', onClick: reindex }, '重新索引'),
+            el('button', { type: 'button', className: 'dsh-wm-button', onClick: reindex, disabled: busy }, busy ? '索引中…' : '重新索引'),
             el('span', { className: 'dsh-wm-stats' }, statText),
           ),
         }),
+
+        notes[0].length > 0
+          ? el('div', { className: 'dsh-wm-row' },
+            el('div', { className: 'dsh-wm-rowLabel' },
+              el('div', { className: 'dsh-wm-rowTitle' }, '插件提示'),
+              el('div', { className: 'dsh-wm-caption' }, notes[0].join('；')),
+            ),
+          )
+          : null,
 
         el('div', { className: 'dsh-wm-row' },
           el('div', { className: 'dsh-wm-rowLabel' },

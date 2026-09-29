@@ -32,7 +32,7 @@
 
 1. 本插件是 DSH **组合包（bundle）**：`package.json` 声明 `dsh.bundle` + `dsh.client`。
 2. host 半边监听 `agent/status`（计时通知）+ 索引知识库 + 注册 `kb_search`/`web_capture`/`kb_recent` 模型工具 + 提供 `/wf/*` 路由；浏览器半边是设置页。
-3. 配置持久化在插件自己的 `config.json`（`GET/POST /wf/settings`），索引数据在 `kb-index.json`（均已 gitignore）。
+3. 配置持久化在 `config.json`（`GET/POST /wf/settings`），索引数据在 `kb-index.json`；两者都在 DSH 数据目录 `<DSH_HOME>\plugin-data\<profile>\dsh-workmate\`，**不在 pnpm 管理的插件目录里**（更新/重装不会清空）。
 
 ## 环境要求
 
@@ -111,13 +111,30 @@ dsh-workmate/
 ├── client.js             # 浏览器半边：设置页 UI
 ├── docs/
 │   └── screenshots/      # 设置页效果预览截图
+├── tests/                # host 半边冒烟测试：node tests/host-smoke.mjs
 ├── README.md
 ├── 使用与配置文档.md      # 完整使用与配置说明
 ├── 安装教程-桌面版.md     # DeepSeek Harness 桌面版（Windows）安装教程
-├── config.json           # 运行时生成：用户配置（已 gitignore）
-├── kb-index.json         # 运行时生成：知识库索引（已 gitignore）
 └── LICENSE
 ```
+
+运行时数据不在本目录，而在 DSH 数据目录：
+
+```
+<DSH_HOME>\plugin-data\<profile>\dsh-workmate\
+├── config.json      # 你的设置
+└── kb-index.json    # 知识库索引（含 web_capture 抓取的网页正文）
+```
+
+## 测试
+
+```powershell
+node tests/host-smoke.mjs
+```
+
+零依赖：把 `@deepseek-ai/dsh-tools` 换成桩后直接加载 host 半边，用临时 `DSH_HOME`
+真实跑索引 / 中文检索 / 路由准入 / 通知去重 / 启动顺序。数据全落在系统临时目录，
+不会碰你已安装的副本。
 
 ## 反馈
 

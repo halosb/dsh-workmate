@@ -1,6 +1,6 @@
 {
   "name": "dsh-workmate",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "工作搭档：长任务完成通知（系统 Toast / Webhook / 音效反馈）+ 私有知识库（本地索引 + kb_search / web_capture / kb_recent 模型工具，重建不丢网页库）。Task-completion notifications and a private knowledge base for DeepSeek Harness.",
   "keywords": [
     "deepseek-harness",
@@ -26,6 +26,7 @@
     "cordis.patch.yml",
     "README.md",
     "使用与配置文档.md",
+    "安装教程-桌面版.md",
     "LICENSE"
   ],
   "engines": {
