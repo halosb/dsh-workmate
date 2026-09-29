@@ -41,7 +41,7 @@
 
 ## 安装
 
-> 🖥️ **桌面版（DeepSeek Harness Desktop 安装包）用户看这里** → **[安装教程-桌面版.md](./安装教程-桌面版.md)**
+> 🖥️ **桌面版（Windows x64 安装包）用户看这里** → **[安装教程-桌面版.md](./安装教程-桌面版.md)**
 > 桌面版不需要你自己装 Node / pnpm，也不需要源码目录，但 profile 要用 `desktop` 而不是 `web`，且装完要**完全退出桌面版（含托盘）再打开**。下面是源码运行 / `dsh web` 的装法。
 
 ```powershell
@@ -113,7 +113,7 @@ dsh-workmate/
 │   └── screenshots/      # 设置页效果预览截图
 ├── README.md
 ├── 使用与配置文档.md      # 完整使用与配置说明
-├── 安装教程-桌面版.md     # DeepSeek Harness 桌面版安装教程
+├── 安装教程-桌面版.md     # DeepSeek Harness 桌面版（Windows）安装教程
 ├── config.json           # 运行时生成：用户配置（已 gitignore）
 ├── kb-index.json         # 运行时生成：知识库索引（已 gitignore）
 └── LICENSE
